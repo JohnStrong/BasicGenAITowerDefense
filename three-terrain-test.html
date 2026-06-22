@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Terrain — Camera Alignment Debug</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0f08;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: monospace;
+            overflow: auto;
+        }
+        #gameCanvas {
+            image-rendering: pixelated;
+        }
+        #ui {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #aaa;
+            font-size: 12px;
+        }
+
+        /* ── Alignment debug panel ─────────────────────────────────────────── */
+        #alignmentPanel {
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            background: rgba(0, 0, 0, 0.78);
+            border: 1px solid rgba(255, 80, 80, 0.6);
+            border-radius: 6px;
+            padding: 12px 16px;
+            color: #fff;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.7;
+            min-width: 240px;
+            pointer-events: none;
+            z-index: 9999;
+        }
+        #alignmentPanel h3 {
+            color: #ff5555;
+            font-size: 13px;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+        #alignmentPanel .label {
+            color: #aaa;
+        }
+        #alignmentPanel .value {
+            color: #7dffa0;
+            font-weight: bold;
+        }
+        #alignmentPanel .hint {
+            margin-top: 8px;
+            color: #bbb;
+            font-size: 11px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            padding-top: 6px;
+        }
+        #alignmentPanel .status-on  { color: #ff5555; font-weight: bold; }
+        #alignmentPanel .status-off { color: #666; }
+    </style>
+</head>
+<body>
+    <div id="ui">Isometric view (2.5D) — Alignment Debug Mode</div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- ── Debug info panel ──────────────────────────────────────────────── -->
+    <div id="alignmentPanel">
+        <h3>🔴 Alignment Debug Mode</h3>
+        <div>
+            <span class="label">Outlines: </span>
+            <span id="overlayStatus" class="status-on">ON</span>
+        </div>
+        <div>
+            <span class="label">Zoom: </span>
+            <span id="zoomValue" class="value">—</span>
+        </div>
+        <div>
+            <span class="label">Tiles drawn: </span>
+            <span id="tileCount" class="value">—</span>
+        </div>
+        <div class="hint">
+            <strong>Press D</strong> to toggle red outlines<br>
+            Red diamonds should sit exactly on<br>
+            the <em>top face</em> of each Three.js voxel block.<br>
+            ≤ 1 px tolerance at all zoom/pan states.
+        </div>
+    </div>
+
+    <!-- ── Game scripts — identical load order to index.html ─────────────── -->
+    <script src="js/game-logic/utils.js"></script>
+    <script src="js/game-logic/animation-controller.js"></script>
+    <script src="js/game-logic/pixi-renderer.js"></script>
+    <script src="js/game-logic/sprites.js"></script>
+    <script src="js/game-logic/unit-manager.js"></script>
+    <script src="js/game-logic/lib/ai/pathfinding-engine.js"></script>
+    <script src="js/game-logic/lib/ai/enemy-manager.js"></script>
+    <script src="js/game-logic/lib/iso-camera.js"></script>
+    <script src="js/game-logic/lib/iso-input.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.min.js"></script>
+    <script src="js/game-logic/lib/three-terrain-renderer.js"></script>
+    <script src="js/game-logic/lib/iso-renderer.js"></script>
+    <script src="js/game-logic/lib/hud.js"></script>
+    <script src="js/game-logic/level-loader.js"></script>
+
+    <!--
+        game-iso.js defines USE_THREE_RENDERER = true at module level (const).
+        We load it first so all game infrastructure is available, then the
+        alignment overlay script below patches Game.loop after init completes.
+    -->
+    <script src="js/game-logic/game-iso.js"></script>
+
+    <!-- ── Alignment overlay — injected AFTER game-iso.js ────────────────── -->
+    <script>
+    /**
+     * Camera Alignment Debug Overlay
+     *
+     * Purpose: Validates that Three.js voxel block top faces align with the
+     * 2D isometric diamond outlines within ≤ 1 pixel tolerance at all zoom
+     * and pan states.
+     *
+     * Approach: After every normal game loop render, draw red diamond outlines
+     * over each tile centre using IsoRenderer.drawDiamondOutline with the same
+     * IsoCamera transform applied — the same coordinates used by the 2D layer.
+     * If Three.js syncCamera() is correct, these outlines coincide exactly with
+     * the top face of each rendered voxel block.
+     *
+     * Requirements validated: 2.3 (camera mirrors IsoCamera), 7.1, 7.2
+     */
+    (function installAlignmentOverlay() {
+
+        // ── State ──────────────────────────────────────────────────────────
+        window._alignmentDebug = true;   // toggle with 'D'
+        let _lastTileCount = 0;
+
+        // ── UI refs ────────────────────────────────────────────────────────
+        const overlayStatus = document.getElementById('overlayStatus');
+        const zoomValueEl   = document.getElementById('zoomValue');
+        const tileCountEl   = document.getElementById('tileCount');
+
+        // Update the info panel every ~500 ms (cheap polling — avoids per-frame DOM writes)
+        setInterval(function updatePanel() {
+            // Zoom
+            if (typeof IsoCamera !== 'undefined') {
+                zoomValueEl.textContent = (IsoCamera.zoom * 100).toFixed(0) + '%';
+            }
+            // Tile count
+            tileCountEl.textContent = _lastTileCount;
+            // Outline toggle
+            if (window._alignmentDebug) {
+                overlayStatus.textContent = 'ON';
+                overlayStatus.className = 'status-on';
+            } else {
+                overlayStatus.textContent = 'OFF';
+                overlayStatus.className = 'status-off';
+            }
+        }, 500);
+
+        // ── Keyboard toggle ────────────────────────────────────────────────
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'd' || e.key === 'D') {
+                window._alignmentDebug = !window._alignmentDebug;
+                console.log(
+                    '[AlignmentDebug] Outlines',
+                    window._alignmentDebug ? 'ON' : 'OFF'
+                );
+            }
+        });
+
+        // ── Overlay draw function ──────────────────────────────────────────
+        /**
+         * Draw a red diamond outline over every visible tile centre, using the
+         * same canvas transform that the 2D render pass uses. This mirrors the
+         * coordinate space of IsoRenderer.drawTerrain() exactly.
+         */
+        function drawAlignmentOverlay() {
+            // Guard: game must be initialised and past the loading phase
+            if (!Game._state || Game._state.phase === 'loading') return;
+            if (!Game.ctx) return;
+
+            const level = LevelLoader.getCurrentLevel();
+            if (!level || !level.tiles || level.tiles.length === 0) return;
+
+            const ctx = Game.ctx;
+
+            // Apply the same camera transform the 2D render pass uses so our
+            // diamond coordinates map to the exact same screen positions.
+            ctx.save();
+            IsoCamera.applyTransform(ctx);
+
+            let drawn = 0;
+            for (const tile of level.tiles) {
+                // Skip covered tiles — they are not rendered by either layer
+                if (tile.covered) continue;
+
+                const { x, y } = IsoCamera.gridToScreen(tile.row, tile.col);
+
+                // Draw a semi-transparent red diamond outline at the tile centre.
+                // Stroke width 1.5 px (in world-space; will appear ~1px at zoom 1).
+                IsoRenderer.drawDiamondOutline(
+                    ctx,
+                    x, y,
+                    IsoCamera.tileW,
+                    IsoCamera.tileH,
+                    'rgba(255, 30, 30, 0.85)',
+                    1.5
+                );
+                drawn++;
+            }
+
+            ctx.restore();
+            _lastTileCount = drawn;
+        }
+
+        // ── Loop patch ────────────────────────────────────────────────────
+        // We wait for Game.init() to finish (it's called on window 'load') before
+        // patching Game.loop. Game.loop() calls requestAnimationFrame(() => this.loop())
+        // at the end of each frame, so patching the method on the Game object is
+        // sufficient — every future iteration picks up the patched version.
+        //
+        // We use a MutationObserver-free approach: poll until Game._state is set,
+        // which indicates init() has completed its async setup and Game.loop()
+        // is running. Then install the patch.
+
+        let _patchInstalled = false;
+
+        function tryInstallPatch() {
+            // Game object may not exist yet if this script runs before game-iso.js
+            // finishes defining it (shouldn't happen but guard anyway)
+            if (typeof Game === 'undefined') {
+                setTimeout(tryInstallPatch, 50);
+                return;
+            }
+
+            if (_patchInstalled) return;
+            _patchInstalled = true;
+
+            // Capture the original loop method bound to Game so `this` works correctly
+            // inside the original implementation when called as origLoop().
+            const origLoop = Game.loop.bind(Game);
+
+            Game.loop = function alignmentDebugLoop() {
+                // Run the normal game loop (renders Three.js + 2D canvas)
+                origLoop();
+
+                // After the normal render, draw alignment outlines on top if enabled
+                if (window._alignmentDebug) {
+                    drawAlignmentOverlay();
+                }
+
+                // NOTE: origLoop() ends with requestAnimationFrame(() => this.loop()).
+                // Because we replaced Game.loop, the rAF callback will call
+                // alignmentDebugLoop on the next frame automatically — no extra
+                // rAF needed here.
+            };
+
+            console.log(
+                '[AlignmentDebug] Loop patched. ' +
+                'Red outlines will draw over every tile centre after each render frame. ' +
+                'Press D to toggle. ' +
+                'Outlines should sit exactly on Three.js voxel top faces (≤1 px tolerance).'
+            );
+        }
+
+        // Game.init() is triggered by window 'load'. Our script also runs on load
+        // (scripts execute synchronously as the parser reaches them, before load fires).
+        // So by the time window 'load' fires, all scripts are defined. We install the
+        // patch on the 'load' event too — after Game.init() registers its own listener.
+        // Both 'load' handlers fire in registration order, so Game.init() runs first.
+        //
+        // However, Game.init() is async and Game.loop() starts after several awaits
+        // (atlas load, level load). We poll until Game.loop is available and has been
+        // called at least once (indicated by _state being set).
+        window.addEventListener('load', function waitForGameInit() {
+            // Poll until game init completes and the loop is running
+            const poll = setInterval(function() {
+                if (typeof Game !== 'undefined' && Game._state !== null) {
+                    clearInterval(poll);
+                    tryInstallPatch();
+                }
+            }, 100);
+        });
+
+    })();
+    </script>
+</body>
+</html>

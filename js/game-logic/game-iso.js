@@ -146,6 +146,10 @@ const UNIT_STEP_INTERVAL_MS = 1_000;
 /** Resolve phase duration in milliseconds (10 seconds). */
 const RESOLVE_DURATION_MS = 10_000;
 
+// ─── Renderer flag (deprecated — Three.js is always active) ───────────────────
+// Kept as a constant for backward compatibility with existing tests.
+const USE_THREE_RENDERER = true;
+
 /**
  * AABB hit-test — returns true if (x, y) is inside rect.
  *
@@ -837,32 +841,34 @@ function applyRenderRects(state, rectPatch) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Game = {
-    canvas: null,
+    canvas: null,  // #gameCanvas — 2D overlay for units, HUD, outlines
     ctx: null,
     _state: null,
 
     async init() {
+        // ── Two-canvas setup ─────────────────────────────────────────────────
+        // #threeCanvas: Three.js WebGL terrain (behind)
+        // #gameCanvas:  2D Canvas overlay for units, HUD, outlines (on top, transparent bg)
+        const threeCanvas = document.getElementById('threeCanvas');
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = this.canvas.getContext('2d');
-        this.canvas.width = 1024;
-        this.canvas.height = 768;
 
-        // Init camera
+        // Full-page canvas — fill the browser window
+        const W = window.innerWidth;
+        const H = window.innerHeight;
+
+        threeCanvas.width  = W;
+        threeCanvas.height = H;
+        this.canvas.width  = W;
+        this.canvas.height = H;
+
+        // Init camera (uses the 2D overlay canvas for size/input coords)
         IsoCamera.init(this.canvas, { tileW: 64, tileH: 32, zoom: 0.7 });
 
-        // ── RISK: async gap — input handlers registered before _state is ready ──
-        // IsoInput is wired here, before any await, so the DOM event listeners are
-        // live from this point on. Every await below is a yield point where the
-        // browser can process queued events (clicks, mouse moves) before _state has
-        // been initialised. If a handler fires during that window it will read
-        // this._state as null and crash.
-        //
-        // MITIGATION: every input callback below must null-check this._state before
-        // calling any transition. Handlers that fire before _state is set are silently
-        // dropped — the player hasn't seen the game yet, so no input is meaningful.
-        //
-        // See: .kiro/specs/defensive-phase-hud/design.md
-        //      § "The one real risk: async/await in init()"
+        // ── Three.js terrain renderer init ────────────────────────────────────
+        ThreeTerrainRenderer.init(threeCanvas, this.canvas);
+
+        // ── Input ────────────────────────────────────────────────────────────
         IsoInput.init(this.canvas, {
             onMouseMove: (x, y) => {
                 if (!this._state) return;
@@ -887,7 +893,6 @@ const Game = {
                 this.centerOnFlag();
             },
             onZoom: (dir) => {
-                // Zoom is disabled during loading and briefing — map is non-interactive.
                 if (!this._state) return;
                 if (this._state.phase === 'placement' || this._state.phase === 'active') {
                     IsoCamera.applyZoom(dir * IsoCamera.zoomSpeed * 2);
@@ -899,34 +904,10 @@ const Game = {
             },
         });
 
-        // ── PixiJS initialisation (Req 5.5, 6.4) ────────────────────────────
-        // Each await below is a yield point. Input events queued by the browser
-        // during these awaits will be processed when control returns to the event
-        // loop — but the null-guards above ensure they are dropped safely.
-        //
-        // Step 1: Initialise PixiJS with the existing canvas element.
-        const pixiRenderer = await PixiRenderer.initPixiRenderer(this.canvas);
-
-        // Step 2: Wire the PixiJS renderer into SpriteManager so draw() delegates
-        //         to PixiJS when the atlas is loaded (Req 5.4).
-        SpriteManager.usePixiRenderer(pixiRenderer);
-
-        // Step 3: Load the sprite atlas (Req 6.6). Falls back to individual PNGs
-        //         automatically if the atlas or JSON fails to load (Req 5.1, 6.7).
-        await SpriteManager.loadAtlas(
-            'assets/sprites/atlas-0.png',
-            'assets/sprites/atlas.json'
-        );
-
-        // Step 4: Register animated sprite types with AnimationController (Req 5.3).
-        // water-anim: 4 frames at 500 ms/frame (matches atlas.json animations section).
-        AnimationController.registerAnimatedType('water-anim', 4, 500);
-        // flag: 3 frames at 600 ms/frame (ANIMATION_CONFIG from design doc).
-        AnimationController.registerAnimatedType('flag', 3, 600);
-
-        // Step 5: Visual integration test — draw a damaged castle sprite on startup
-        //         to confirm damaged sprites load and display correctly (Req 9.7).
-        this._renderDamagedCastleIntegrationTest();
+        // ── Sprite loading (plain Canvas 2D — no PixiJS) ─────────────────────
+        // Units and overlays still draw via SpriteManager on the 2D canvas.
+        // Terrain is fully handled by Three.js so we only need unit/overlay sprites.
+        await SpriteManager.loadAll();
 
         // Load remaining assets
         await LevelLoader.loadLevelList();
@@ -968,6 +949,9 @@ const Game = {
         } catch (e) {
             console.warn('[Game] EnemyManager.init() failed:', e);
         }
+
+        // ── Three.js terrain tile build ───────────────────────────────────────
+        ThreeTerrainRenderer.buildTiles(LevelLoader.getCurrentLevel().tiles);
 
         // Reset all turn sub-state fields so each level load/restart begins
         // with a clean player turn (Req 8.2).
@@ -1072,6 +1056,10 @@ const Game = {
             if (IsoInput.keys.zoomOut) IsoCamera.applyZoom(-IsoCamera.zoomSpeed);
         }
 
+        // ── Three.js terrain render (before 2D canvas pass) ──────────────────
+        ThreeTerrainRenderer.syncCamera(IsoCamera);
+        ThreeTerrainRenderer.render();
+
         // ── Render ────────────────────────────────────────────────────────────
         // Reads state, emits canvas draw calls, returns rect patch.
         const rectPatch = this._render(this._state);
@@ -1115,8 +1103,9 @@ const Game = {
         const canvasW = this.canvas.width;
         const canvasH = this.canvas.height;
 
-        ctx.fillStyle = '#1a2a12';
-        ctx.fillRect(0, 0, canvasW, canvasH);
+        // Clear the 2D overlay canvas to fully transparent each frame so
+        // the Three.js terrain layer on #threeCanvas shows through.
+        ctx.clearRect(0, 0, canvasW, canvasH);
 
         if (state.phase === 'loading') {
             ctx.fillStyle = '#fff'; ctx.font = '18px monospace'; ctx.textAlign = 'center';

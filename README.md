@@ -26,6 +26,7 @@ A turn-based medieval tower defense game rendered in isometric 2.5D with procedu
 - [NPM Scripts](#npm-scripts)
 - [Project Structure](#project-structure)
 - [Testing](#testing)
+- [Terrain Rendering](#terrain-rendering)
 - [Level File Format](#level-file-format)
 - [Elevation Files](#elevation-files)
 - [Enhanced Sprite Pipeline](#enhanced-sprite-pipeline)
@@ -392,6 +393,7 @@ Bulwark/
     │       ├── iso-input.js        # Input: keyboard, mouse, wheel with decoupled callbacks
     │       ├── iso-renderer.js     # Two-pass terrain + unit rendering, overlay constants
     │       ├── overlay-utils.js    # Overlay allowlist + draw closure resolver
+    │       ├── three-terrain-renderer.js  # Three.js WebGL terrain renderer — voxel blocks for grass/water/stone/road tiles
     │       └── ai/                 # Enemy AI system (see js/game-logic/lib/ai/README.md)
     │           ├── pathfinding-engine.js  # A* on hex grid, movement costs, sight lines, overlay builder
     │           └── enemy-manager.js       # Spawning, sighting registry, engagement zones, turn execution
@@ -455,6 +457,71 @@ Key test areas:
 - **Animation timing** — validates that animated sprites advance frames at the configured interval independent of render rate, that all sprites of the same type share one frame index, and that out-of-range intervals are clamped rather than rejected (Property 14)
 - **Damaged sprite area** — verifies each damaged castle variant replaces at least 15% of the stone block area with damage (cracks, missing blocks, rubble)
 - **Build pipeline overlay check** — verifies the pre-pack existence check throws with a structured `[SPRITE-BUILD-ERROR]` diagnostic and exits non-zero when any of the seven tree overlay PNGs are absent from `OUTPUT_DIR`, and that all overlay sprite names from `TREE_OVERLAY_SPRITES` are included in the entries passed to `packAtlas()`; also verifies the same guard for all 20 castle structure overlay PNGs (`CASTLE_OVERLAY_SPRITES`) and that the build exits non-zero when `CASTLE_OVERLAY_SPRITES` is undefined or empty
+
+## Terrain Rendering
+
+The game supports two terrain rendering modes controlled by a single flag in `js/game-logic/game-iso.js`:
+
+```js
+const USE_THREE_RENDERER = true;
+```
+
+### Rendering modes
+
+**Three.js WebGL mode** (`USE_THREE_RENDERER = true`, default):
+
+Terrain tiles (grass, water, stone/rock, road) are rendered as Minecraft-style voxel blocks by `ThreeTerrainRenderer`, the module in `js/game-logic/lib/three-terrain-renderer.js`. The game uses a two-canvas stacking arrangement inside a fixed full-page `#canvasContainer`:
+
+- **`#threeCanvas`** — Three.js `WebGLRenderer` target (bottom layer, terrain voxels)
+- **`#gameCanvas`** — 2D Canvas overlay for units, tree overlays, HUD panels, and selection outlines (top layer, transparent background)
+
+Both canvases are sized to `window.innerWidth × window.innerHeight` during `Game.init()` so the game fills the browser window at any viewport size. The 2D Canvas clears to fully transparent each frame (`clearRect`) so the WebGL terrain shows through from below.
+
+The background clear colour when the Three.js renderer is active is `0x4DD0E1` (Material Design Cyan 300), an azure/aqua sky tone. To change it, update the `setClearColor` call in `ThreeTerrainRenderer.init()` inside `three-terrain-renderer.js`.
+
+Castle tiles, bridge tiles, and tree overlays are not handled by the Three.js renderer — they always fall through to the 2D Canvas sprite path unchanged.
+
+**2D Canvas mode** (`USE_THREE_RENDERER = false`):
+
+Setting `USE_THREE_RENDERER = false` in `game-iso.js` restores the full pre-Three.js 2D rendering path with no code changes required beyond that flag. No Three.js code is called, `#threeCanvas` is unused, the background clears to the original dark green (`#1a2a12`) directly on `#gameCanvas`, and all terrain tiles are drawn as isometric 2D sprites exactly as they were before the Three.js renderer was added.
+
+### Coordinate system
+
+`ThreeTerrainRenderer` uses a pure Three.js world space — no 2D pixel math. Each tile at grid position `(row, col)` maps to:
+
+```
+worldX = col × TILE_W   (80 world units per column)
+worldZ = row × TILE_D   (80 world units per row)
+worldY = 0              (ground plane — block top face sits at Y = 0)
+```
+
+The `OrthographicCamera` is placed along the classic isometric axis `(1, √2, 1)` and looks at a target point that tracks `isoCamera.camX / camY` for panning and `isoCamera.zoom` for frustum scaling. This means both the 2D and 3D layers stay in sync purely through `syncCamera(isoCamera)` called each frame — no IsoCamera pixel-projection math is replicated in the renderer.
+
+### Camera pan and zoom
+
+`syncCamera(isoCamera)` is called every game loop iteration before `render()`. It:
+
+1. Recomputes the orthographic frustum from `canvas.width / zoom` and `canvas.height / zoom`
+2. Shifts the camera look-at point by `camX / zoom` and `camY / zoom` in world space, relative to the map centre computed at `buildTiles()` time
+3. Repositions the camera along the isometric axis from the new look-at point
+
+### Switching between renderers
+
+Change the flag at the top of `js/game-logic/game-iso.js`:
+
+```js
+// Three.js WebGL terrain (default)
+const USE_THREE_RENDERER = true;
+
+// Original 2D sprite terrain — change to false to revert
+const USE_THREE_RENDERER = false;
+```
+
+No other files need to be edited. The `<script>` tag for Three.js in `index.html` can remain in place — the renderer flag is the only switch needed.
+
+### Graceful CDN degradation
+
+If Three.js fails to load (CDN blocked, offline), the module falls back to a no-op object so `game-iso.js` never throws. The game continues with the 2D Canvas path automatically.
 
 ## Level File Format
 

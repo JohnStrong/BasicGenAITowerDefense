@@ -34,17 +34,14 @@ const IsoRenderer = {
                 tile.row === state.selectedTile.row && tile.col === state.selectedTile.col;
             if (isSelected) y -= state.selectedLift;
 
-            // Ground pass — always draw tile.sprite at standard tile dimensions
-            SpriteManager.draw(ctx, tile.sprite, x - camera.tileW/2, y - camera.tileH/2, camera.tileW, camera.tileH);
+            // Ground pass — Three.js renders all terrain. Skip the 2D sprite draw
+            // for every tile. Tree/castle tiles that have overlay sprites still
+            // draw their overlays below.
+            // (No SpriteManager.draw for ground sprites in this renderer path)
 
-            // Overlay pass — draw tree overlay at native dimensions, offset upward
-            if (tile.overlay) {
-                const tileCenterX = x;
-                const tileTopY = y - camera.tileH / 2;
-                const overlayX = tileCenterX - OVERLAY_WIDTH / 2;
-                const overlayY = tileTopY - (OVERLAY_HEIGHT - camera.tileH) + TREE_OVERLAY_OFFSET_Y;
-                SpriteManager.draw(ctx, tile.overlay, overlayX, overlayY, OVERLAY_WIDTH, OVERLAY_HEIGHT);
-            }
+            // Overlay pass — disabled while Three.js terrain is active.
+            // Tree overlays will be re-enabled as a separate 3D pass in a future update.
+            // if (tile.overlay) { ... }
 
             // Hover/select diamond outlines drawn after both sprite draw calls
             const isHovered = state.hoveredTile &&
