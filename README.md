@@ -495,15 +495,17 @@ worldZ = row × TILE_D   (80 world units per row)
 worldY = 0              (ground plane — block top face sits at Y = 0)
 ```
 
-The `OrthographicCamera` is placed along the classic isometric axis `(1, √2, 1)` and looks at a target point that tracks `isoCamera.camX / camY` for panning and `isoCamera.zoom` for frustum scaling. This means both the 2D and 3D layers stay in sync purely through `syncCamera(isoCamera)` called each frame — no IsoCamera pixel-projection math is replicated in the renderer.
+The `OrthographicCamera` is placed along the isometric axis `(-1, 1.2, -1)` normalised (front-left elevated view) and looks at a target point that tracks scroll input for panning and `isoCamera.zoom` for frustum scaling. Pan is driven directly by `IsoInput.getScrollDir()` each frame — the renderer does not read `isoCamera.camX / camY` or replicate IsoCamera pixel-projection math.
 
 ### Camera pan and zoom
 
 `syncCamera(isoCamera)` is called every game loop iteration before `render()`. It:
 
 1. Recomputes the orthographic frustum from `canvas.width / zoom` and `canvas.height / zoom`
-2. Shifts the camera look-at point by `camX / zoom` and `camY / zoom` in world space, relative to the map centre computed at `buildTiles()` time
-3. Repositions the camera along the isometric axis from the new look-at point
+2. Reads `IsoInput.getScrollDir()` for the current frame's scroll delta (`dx`, `dy`)
+3. Projects the camera's forward direction onto the XZ ground plane and derives a screen-right vector perpendicular to it
+4. Moves the look-at point along screen-right by `dx` and along negative-forward by `dy` (so the up key moves the camera forward into the scene), scaled by `PAN_SPEED / zoom`
+5. Repositions the camera along the isometric axis from the updated look-at point
 
 ### Switching between renderers
 
