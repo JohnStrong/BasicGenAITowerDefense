@@ -449,7 +449,7 @@ These plain functions live at module scope, not on `Game`. They are stateless an
 
 ```
 Game.init()
-  → set canvas size (1024×768)
+  → size both canvases to window.innerWidth × window.innerHeight (full-page, responsive)
   → IsoCamera.init()
   → IsoInput.init() with callbacks
   → PixiRenderer.initPixiRenderer(canvas)        // WebGL → CanvasRenderer → Canvas 2D

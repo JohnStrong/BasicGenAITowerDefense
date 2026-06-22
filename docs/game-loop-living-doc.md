@@ -98,10 +98,27 @@ If you want, I can produce:
 
 ---
 
+## Canvas Setup
+
+The game uses a two-canvas stacking arrangement, both sized to fill the browser window on init:
+
+```
+#canvasContainer (fixed, full-page)
+├── #threeCanvas  — Three.js WebGL terrain renderer (behind)
+└── #gameCanvas   — 2D Canvas overlay for units, HUD, outlines (on top, transparent background)
+```
+
+Both canvases are sized to `window.innerWidth × window.innerHeight` during `Game.init()`. This replaced the previous fixed `1024×768` size so the game fills the browser window at any viewport size.
+
+The `#gameCanvas` 2D context clears to fully transparent each frame (`clearRect`) so the WebGL terrain on `#threeCanvas` shows through. When `USE_THREE_RENDERER = false`, `#threeCanvas` is unused and the dark-green background fill is drawn directly on `#gameCanvas` instead.
+
+---
+
 ## Current Implementation Status (as of latest build)
 
 ### What's Working
 - **Isometric 2.5D map rendering** with camera scroll (WASD), zoom (+/-/wheel), viewpoint rotation (spacebar)
+- **Full-page canvas** — both canvases size to `window.innerWidth × window.innerHeight` on load
 - **Level loading** from text files with elevation support
 - **Tile interaction**: hover highlight (gold border), click to select (lift animation + info panel)
 - **Unit system**: resources CSV loaded, unit types mapped to sprites, placement API ready
