@@ -167,13 +167,25 @@ window.ThreeTerrainRenderer = {
         _cam.left   = -hw;  _cam.right  = hw;
         _cam.top    =  hh;  _cam.bottom = -hh;
 
-        // Pan: read scroll direction from IsoInput
+        // Pan: move the look-at point along camera-relative screen directions.
+        // Compute screen-right and screen-up vectors projected onto the XZ ground plane.
         if (typeof IsoInput !== 'undefined') {
             const { dx, dy } = IsoInput.getScrollDir();
             if (dx || dy) {
                 const spd = _PAN_SPEED / zoom;
-                _look.x += ( dx - dy) * spd * 0.5;
-                _look.z += ( dx + dy) * spd * 0.5;
+
+                // Camera forward direction projected on XZ (ignore Y)
+                const fwd = new THREE.Vector3();
+                _cam.getWorldDirection(fwd);
+                fwd.y = 0;
+                fwd.normalize();
+
+                // Screen-right is perpendicular to forward on XZ plane
+                const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+
+                // dx moves along screen-right, -dy moves along screen-forward (up key = dy -1 → move forward into scene)
+                _look.x += (right.x * dx - fwd.x * dy) * spd;
+                _look.z += (right.z * dx - fwd.z * dy) * spd;
             }
         }
 
